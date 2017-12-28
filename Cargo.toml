@@ -1,0 +1,15 @@
+[package]
+name = "libxml2"
+version = "0.1.0"
+authors = ["Andreas Franzén <andreas@devil.se>"]
+
+build = "build.rs"
+
+[dependencies]
+libc = "0.2.34"
+bitflags = "1.0"
+
+[build-dependencies]
+gcc = "0.3.54"
+bindgen = "0.32.1"
+
