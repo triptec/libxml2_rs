@@ -8,8 +8,8 @@ use std::io::{Read, BufReader};
 use std::fs::File;
 use std::path::Path;
 
-mod document;
-mod node;
+pub mod document;
+pub mod node;
 
 
 bitflags! {

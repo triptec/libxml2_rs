@@ -16,9 +16,14 @@ use libxml2::{xmlBufferCreate,
               xmlResetLastError,
               xmlSetStructuredErrorFunc,
               xmlDocGetRootElement,
+              xmlDocSetRootElement,
               xmlDocDumpMemoryEnc,
               xmlDocDumpFormatMemoryEnc,
               xmlNodeDump,
+              xmlDocCopyNode,
+              xmlUnlinkNode,
+              xmlSaveFile,
+              xmlNewDoc,
               xmlDocPtr,
               xmlNodePtr};
 
@@ -32,7 +37,7 @@ pub struct _Document {
     // TODO: How to make public only in this package?
     pub doc_ptr: xmlDocPtr,
     errors: Vec<XmlError>,
-    nodes: HashMap<xmlNodePtr, Node>,
+    pub nodes: HashMap<xmlNodePtr, Node>,
 }
 
 impl _Document {
@@ -57,6 +62,46 @@ impl Drop for _Document {
 
 impl Document {
 
+    /// Creates a new empty libxml2 document
+    pub fn new() -> Result<Self, ()> {
+        unsafe {
+            let c_version = CString::new("1.0").unwrap();
+            let doc_ptr = xmlNewDoc(c_version.as_ptr() as *const u8);
+            if doc_ptr.is_null() {
+                Err(())
+            } else {
+                let doc = _Document{doc_ptr: doc_ptr, errors: vec![], nodes: HashMap::new()};
+                Ok(Document(Rc::new(RefCell::new(doc))))
+            }
+        }
+    }
+
+    pub fn doc_ref(&self) -> DocumentRef {
+        self.0.clone()
+    }
+
+    pub fn doc_ptr(&self) -> xmlDocPtr {
+        self.0.borrow().doc_ptr
+    }
+
+    fn ptr_as_option(&mut self, node_ptr: xmlNodePtr) -> Option<Node> {
+        if node_ptr.is_null() {
+            None
+        } else {
+            let new_node = Node::wrap(node_ptr, self.0.clone());
+            self.0.borrow_mut().insert_node(node_ptr, new_node.clone());
+            Some(new_node)
+        }
+    }
+
+    /// Import a `Node` from another `Document`
+    pub fn import_node(&mut self, node: &mut Node) -> Option<Node> {
+        let new_node_ptr = unsafe {
+            xmlDocCopyNode(node.node_ptr(), self.doc_ptr(), 1)
+        };
+        self.ptr_as_option(new_node_ptr)
+    }
+
 
     /// Get the root element of the document
     pub fn get_root_element(&self) -> Option<Node> {
@@ -65,12 +110,21 @@ impl Document {
             if node_ptr.is_null() {
                 None
             } else {
-                let node = Node::new(node_ptr, self.0.clone());
+                let node = Node::wrap(node_ptr, self.0.clone());
                 self.0.borrow_mut().nodes.insert(node_ptr, node.clone());
                 Some(node)
             }
         }
     }
+
+    /// Sets the root element of the document
+    pub fn set_root_element(&mut self, root: &mut Node) {
+        unsafe {
+            // TODO: returns old root if any, should we do something with that?
+            xmlDocSetRootElement(self.doc_ptr(), root.node_ptr());
+        }
+    }
+
     pub fn to_string(&self, format: bool) -> String {
         unsafe {
             // allocate a buffer to dump into
@@ -89,6 +143,18 @@ impl Document {
             let node_string = str::from_utf8(c_string.to_bytes()).unwrap().to_owned();
             mem::forget(receiver);
             node_string
+        }
+    }
+
+    /// Write document to `filename`
+    pub fn save_file(&self, filename: &str) -> Result<c_int, ()> {
+        let c_filename = CString::new(filename).unwrap();
+        unsafe {
+            let retval = xmlSaveFile(c_filename.as_ptr(), self.doc_ptr());
+            if retval < 0 {
+                return Err(());
+            }
+            Ok(retval)
         }
     }
 
@@ -114,6 +180,7 @@ impl Document {
     fn parse_file(filename: &str, encoding: &str, options: ParseOptions) -> Result<Document, Vec<XmlError>> {
         let c_filename = CString::new(filename).unwrap();
         let c_utf8 = CString::new(encoding).unwrap();
+
         Document::parse_handler(|| unsafe { xmlReadFile(c_filename.as_ptr(), c_utf8.as_ptr(), options.bits as i32) })
     }
 
@@ -162,5 +229,23 @@ mod tests {
     fn get_root_element_test(){
         let doc = Document::parse("<root></root>").unwrap();
         let node = doc.get_root_element().unwrap();
+    }
+
+    #[test]
+    fn document_can_import_node() {
+        let xml_string = String::from(r#"<root>
+            <child attribute="value">some text</child>
+            <child attribute="empty">more text</child>
+        </root>"#);
+        let doc1 = Document::parse(&xml_string).unwrap();
+        let mut doc2 = Document::parse(&xml_string).unwrap();
+
+        assert_eq!(doc2.get_root_element().unwrap().get_child_elements().len(), 2);
+
+        let elements = doc1.get_root_element().unwrap().get_child_elements();
+        let node = elements.first().unwrap();
+        let imported = doc2.import_node(&mut node.clone()).unwrap();
+        assert!(doc2.get_root_element().unwrap().add_child(imported).is_ok());
+        assert_eq!(doc2.get_root_element().unwrap().get_child_elements().len(), 3);
     }
 }
